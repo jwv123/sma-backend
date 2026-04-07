@@ -14,10 +14,11 @@ async function triggerWorkflow(workflowId, scheduleId, contentData = null) {
   const fetch = await getFetch();
   try {
     console.log(`Triggering workflow ${workflowId} for schedule ${scheduleId}`);
-    console.log(`Webhook URL: ${process.env.WEBHOOK_URL || 'https://ef0ps4gk.rcsrv.net/webhook/'}/${workflowId}`);
+    const WEBHOOK_URL = process.env.WEBHOOK_URL || 'https://ef0ps4gk.rcsrv.net/webhook/';
+console.log(`Webhook URL: ${WEBHOOK_URL}/${workflowId}`);
     console.log(`Content data received:`, JSON.stringify(contentData, null, 2));
 
-    const webhookUrl = `${process.env.WEBHOOK_URL || 'https://ef0ps4gk.rcsrv.net/webhook/'}/${workflowId}`;
+    const webhookUrl = `${WEBHOOK_URL}/${workflowId}`;
 
     // Prepare payload with content data if available
     const payload = {
