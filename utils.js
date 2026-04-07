@@ -15,10 +15,9 @@ async function triggerWorkflow(workflowId, scheduleId, contentData = null) {
   try {
     console.log(`Triggering workflow ${workflowId} for schedule ${scheduleId}`);
     const WEBHOOK_URL = process.env.WEBHOOK_URL || 'https://ef0ps4gk.rcsrv.net/webhook/';
-console.log(`Webhook URL: ${WEBHOOK_URL}/${workflowId}`);
+const webhookUrl = `${WEBHOOK_URL.replace(/\/+$/, '')}/${workflowId}`;
+console.log(`Webhook URL: ${webhookUrl}`);
     console.log(`Content data received:`, JSON.stringify(contentData, null, 2));
-
-    const webhookUrl = `${WEBHOOK_URL}/${workflowId}`;
 
     // Prepare payload with content data if available
     const payload = {
