@@ -1,10 +1,17 @@
 // utils.js
 // Utility functions for the scheduler
 
-const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
+let _fetch;
+async function getFetch() {
+  if (!_fetch) {
+    _fetch = (await import('node-fetch')).default;
+  }
+  return _fetch;
+}
 
 // Function to trigger workflow via webhook
 async function triggerWorkflow(workflowId, scheduleId, contentData = null) {
+  const fetch = await getFetch();
   try {
     console.log(`Triggering workflow ${workflowId} for schedule ${scheduleId}`);
     console.log(`Webhook URL: https://ef0ps4gk.rcsrv.net/webhook-test/${workflowId}`);

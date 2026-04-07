@@ -42,10 +42,12 @@ async function setupAllSchedules() {
 
     // Clear existing jobs
     activeJobs.forEach((job, id) => {
-      if (job.type === 'cron' && job.instance.destroy) {
-        job.instance.destroy();
+      if (job.type === 'cron' && typeof job.instance.stop === 'function') {
+        job.instance.stop();
+        console.log(`Stopped cron job ${id}`);
       } else if (job.type === 'timeout') {
         clearTimeout(job.instance);
+        console.log(`Cleared timeout job ${id}`);
       }
     });
     activeJobs.clear();
@@ -186,9 +188,11 @@ async function setupSchedule(schedule) {
       }
 
       // Handle recurring schedule with cron
+      // Use options to ensure job starts immediately and runs on schedule
       const job = cron.schedule(schedule.cron_expression, async () => {
-        console.log(`Executing scheduled workflow ${schedule.workflow_id} for schedule ${schedule.id}`);
-        console.log(`Schedule data:`, JSON.stringify(schedule, null, 2));
+        console.log(`[CRON EXECUTION] Executing scheduled workflow ${schedule.workflow_id} for schedule ${schedule.id}`);
+        console.log(`[CRON EXECUTION] Current time: ${new Date().toISOString()}`);
+        console.log(`[CRON EXECUTION] Schedule data:`, JSON.stringify(schedule, null, 2));
 
         try {
           // Pass content data if available
@@ -219,7 +223,11 @@ async function setupSchedule(schedule) {
         instance: job
       });
 
-      console.log(`Recurring schedule ${schedule.id} set up successfully`);
+      // Verify the job is scheduled
+      const isScheduled = job.scheduled !== false;
+      console.log(`Recurring schedule ${schedule.id} set up successfully (scheduled: ${isScheduled})`);
+      console.log(`Cron expression: ${schedule.cron_expression}`);
+      console.log(`Next execution will be at the next cron interval matching: ${schedule.cron_expression}`);
     }
   } catch (error) {
     console.error(`Error setting up schedule ${schedule.id}:`, error);
@@ -230,10 +238,12 @@ async function setupSchedule(schedule) {
 function removeSchedule(scheduleId) {
   if (activeJobs.has(scheduleId)) {
     const job = activeJobs.get(scheduleId);
-    if (job.type === 'cron' && job.instance.destroy) {
-      job.instance.destroy();
+    if (job.type === 'cron' && typeof job.instance.stop === 'function') {
+      job.instance.stop();
+      console.log(`Stopped cron job ${scheduleId}`);
     } else if (job.type === 'timeout') {
       clearTimeout(job.instance);
+      console.log(`Cleared timeout job ${scheduleId}`);
     }
     activeJobs.delete(scheduleId);
     console.log(`Schedule ${scheduleId} removed`);
