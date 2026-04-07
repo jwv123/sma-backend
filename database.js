@@ -1,8 +1,8 @@
 // database.js
 const { createClient } = require('@supabase/supabase-js');
 
-// Supabase configuration (same as your frontend)
-const SUPABASE_URL = 'https://jvysmxdkiynzqlnzidze.supabase.co';
+// Supabase configuration (from environment variables)
+const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 // Create Supabase client with service role key for backend access
