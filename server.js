@@ -1,7 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const { setupAllSchedules, setupSchedule, removeSchedule, updateSchedule } = require('./scheduler');
+const { setupAllSchedules, setupSchedule, removeSchedule, updateSchedule, calculateNextExecutionTime } = require('./scheduler');
 const {
   getSchedules,
   createSchedule,
@@ -39,11 +39,23 @@ app.get('/health', (req, res) => {
   res.json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
-// Get all schedules
+// Get all schedules with next execution time
 app.get('/api/schedules', async (req, res) => {
   try {
     const schedules = await getSchedules();
-    res.json({ success: true, schedules });
+    const timezone = process.env.SCHEDULE_TIMEZONE || 'America/New_York';
+
+    // Calculate next execution time for each schedule
+    const schedulesWithNext = schedules.map(schedule => {
+      const { nextExecution, formatted } = calculateNextExecutionTime(schedule.cron_expression, timezone);
+      return {
+        ...schedule,
+        next_execution: formatted,
+        next_execution_time: nextExecution ? nextExecution.toISOString() : null
+      };
+    });
+
+    res.json({ success: true, schedules: schedulesWithNext });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }

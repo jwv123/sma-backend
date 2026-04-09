@@ -113,30 +113,162 @@ function calculateTimeoutForOneTime(schedule) {
   }
 }
 
+// Helper function to get timezone from environment or use default
+function getTimezone() {
+  return process.env.SCHEDULE_TIMEZONE || 'America/New_York';
+}
+
+// Helper function to calculate next execution time for a cron expression
+function calculateNextExecutionTime(cronExpression, timezone) {
+  try {
+    // Parse cron expression manually to calculate next execution
+    // Format: minute hour day-of-month month day-of-week
+    const parts = cronExpression.split(' ');
+    if (parts.length < 5) {
+      return { nextExecution: null, formatted: 'Invalid cron expression' };
+    }
+
+    const [minuteExpr, hourExpr, dayOfMonthExpr, monthExpr, dayOfWeekExpr] = parts;
+
+    // Helper to parse a cron field into an array of valid values
+    function parseCronField(field, min, max, isMonth = false, isDow = false) {
+      const values = [];
+      const parts = field.split(',');
+
+      for (const part of parts) {
+        if (part === '*') {
+          // All values
+          for (let i = min; i <= max; i++) {
+            values.push(i);
+          }
+        } else if (part.includes('/')) {
+          // Step values: e.g., */5 or 1-10/2
+          const [range, step] = part.split('/');
+          const stepVal = parseInt(step);
+
+          let start = min;
+          let end = max;
+
+          if (range !== '*') {
+            const rangeParts = range.split('-');
+            if (rangeParts.length === 2) {
+              start = parseInt(rangeParts[0]);
+              end = parseInt(rangeParts[1]);
+            }
+          }
+
+          for (let i = start; i <= end; i += stepVal) {
+            values.push(i);
+          }
+        } else if (part.includes('-')) {
+          // Range: e.g., 1-5
+          const [start, end] = part.split('-').map(Number);
+          for (let i = start; i <= end; i++) {
+            values.push(i);
+          }
+        } else {
+          // Single value
+          values.push(parseInt(part));
+        }
+      }
+
+      return values.sort((a, b) => a - b);
+    }
+
+    // Get current time
+    const now = new Date();
+    now.setSeconds(0, 0); // Reset seconds for comparison
+
+    // Parse cron fields
+    const minutes = parseCronField(minuteExpr, 0, 59);
+    const hours = parseCronField(hourExpr, 0, 23);
+    const daysOfMonth = parseCronField(dayOfMonthExpr, 1, 31);
+    const months = parseCronField(monthExpr, 1, 12, true);
+    const daysOfWeek = parseCronField(dayOfWeekExpr, 0, 6, false, true);
+
+    // If day of week is *, default to all days (0-6)
+    if (dayOfWeekExpr === '*') {
+      for (let i = 0; i <= 6; i++) daysOfWeek.push(i);
+    }
+
+    // Find next execution time (search next 366 days to handle leap years)
+    for (let daysToAdd = 0; daysToAdd < 366; daysToAdd++) {
+      const testDate = new Date(now);
+      testDate.setDate(now.getDate() + daysToAdd);
+
+      const testDayOfMonth = testDate.getDate();
+      const testMonth = testDate.getMonth() + 1;
+      const testDayOfWeek = testDate.getDay();
+
+      // Check if this date matches the cron expression
+      const matchesDayOfMonth = dayOfMonthExpr === '*' || daysOfMonth.includes(testDayOfMonth);
+      const matchesMonth = months.includes(testMonth);
+      const matchesDayOfWeek = dayOfWeekExpr === '*' || daysOfWeek.includes(testDayOfWeek);
+
+      // Handle day-of-month/day-of-week conflict:
+      // If both are restricted (not *), match if either matches (OR logic)
+      // If one is *, match only the other (AND logic)
+      let matchesDate = false;
+      if (dayOfMonthExpr !== '*' && dayOfWeekExpr !== '*') {
+        // Both restricted: OR logic
+        matchesDate = matchesDayOfMonth || matchesDayOfWeek;
+      } else {
+        // One or both are *: AND logic
+        matchesDate = matchesDayOfMonth && matchesDayOfWeek && matchesMonth;
+      }
+
+      if (matchesDate) {
+        // Check hours and minutes
+        for (const hour of hours) {
+          for (const minute of minutes) {
+            const testTime = new Date(testDate);
+            testTime.setHours(hour, minute, 0, 0);
+
+            // Skip past times
+            if (testTime.getTime() > now.getTime()) {
+              return {
+                nextExecution: testTime,
+                formatted: testTime.toLocaleString()
+              };
+            }
+          }
+        }
+      }
+    }
+
+    return { nextExecution: null, formatted: 'Unknown' };
+  } catch (error) {
+    console.error(`Error calculating next execution time for cron '${cronExpression}':`, error);
+    return { nextExecution: null, formatted: 'Error' };
+  }
+}
+
 // Setup a single schedule
 async function setupSchedule(schedule) {
   try {
+    const timezone = getTimezone();
+
     // Check if it's a one-time schedule
     if (isOneTimeSchedule(schedule)) {
       // Handle one-time schedule with setTimeout
       const { timeout, scheduledTime } = calculateTimeoutForOneTime(schedule);
 
       if (timeout > 0) {
-        console.log(`Setting up one-time schedule ${schedule.id} to run at ${scheduledTime}`);
+        console.log(`Setting up one-time schedule ${schedule.id} to run at ${scheduledTime.toISOString()} (timezone: ${timezone})`);
         console.log(`Schedule data:`, JSON.stringify(schedule, null, 2));
 
-        // Create a placeholder job entry first to prevent race conditions
-        const jobId = schedule.id;
-        activeJobs.set(jobId, {
-          type: 'timeout',
-          instance: null,
-          scheduledTime: scheduledTime
-        });
-
+        // Store the timeout ID directly to avoid race conditions
         const timeoutId = setTimeout(async () => {
-          console.log(`Executing one-time scheduled workflow ${schedule.workflow_id} for schedule ${schedule.id}`);
-          console.log(`Current time: ${new Date()}`);
-          console.log(`Schedule data:`, JSON.stringify(schedule, null, 2));
+          // Check if this schedule still exists in activeJobs before executing
+          const storedJob = activeJobs.get(schedule.id);
+          if (!storedJob) {
+            console.log(`Schedule ${schedule.id} no longer exists, skipping execution`);
+            return;
+          }
+
+          console.log(`[ONE-TIME EXECUTION] Executing scheduled workflow ${schedule.workflow_id} for schedule ${schedule.id}`);
+          console.log(`[ONE-TIME EXECUTION] Current time: ${new Date().toISOString()}`);
+          console.log(`[ONE-TIME EXECUTION] Schedule data:`, JSON.stringify(schedule, null, 2));
 
           try {
             // Pass content data if available
@@ -160,7 +292,7 @@ async function setupSchedule(schedule) {
             activeJobs.delete(schedule.id);
             console.log(`One-time schedule ${schedule.id} executed and removed`);
           } catch (error) {
-            console.error(`Error executing one-time schedule ${schedule.id}:`, error);
+            console.error(`[ONE-TIME ERROR] Error executing one-time schedule ${schedule.id}:`, error);
             await logExecution(schedule.id, false, error.message);
 
             // Remove the job after execution even if it failed
@@ -168,16 +300,16 @@ async function setupSchedule(schedule) {
           }
         }, timeout);
 
-        // Update the job with the actual timeout ID
+        // Update the job with the actual timeout ID immediately
         activeJobs.set(schedule.id, {
           type: 'timeout',
           instance: timeoutId,
           scheduledTime: scheduledTime
         });
 
-        console.log(`One-time schedule ${schedule.id} set up successfully`);
+        console.log(`One-time schedule ${schedule.id} set up successfully (will run in ${Math.round(timeout / 1000)} seconds)`);
       } else {
-        console.log(`One-time schedule ${schedule.id} is in the past, skipping`);
+        console.log(`One-time schedule ${schedule.id} is in the past or invalid, skipping`);
         console.log(`Schedule data:`, JSON.stringify(schedule, null, 2));
       }
     } else {
@@ -187,11 +319,16 @@ async function setupSchedule(schedule) {
         return;
       }
 
+      // Calculate next execution time for logging
+      const { nextExecution, formatted } = calculateNextExecutionTime(schedule.cron_expression, timezone);
+      console.log(`[SCHEDULE SETUP] Next execution will be at: ${formatted}`);
+
       // Handle recurring schedule with cron
-      // Use options to ensure job starts immediately and runs on schedule
+      // Use options to ensure job runs on schedule with correct timezone
       const job = cron.schedule(schedule.cron_expression, async () => {
         console.log(`[CRON EXECUTION] Executing scheduled workflow ${schedule.workflow_id} for schedule ${schedule.id}`);
         console.log(`[CRON EXECUTION] Current time: ${new Date().toISOString()}`);
+        console.log(`[CRON EXECUTION] Timezone: ${timezone}`);
         console.log(`[CRON EXECUTION] Schedule data:`, JSON.stringify(schedule, null, 2));
 
         try {
@@ -211,10 +348,13 @@ async function setupSchedule(schedule) {
 
           const result = await triggerWorkflow(schedule.workflow_id, schedule.id, contentData);
           await logExecution(schedule.id, result.success, result.response || result.error);
+          console.log(`[CRON SUCCESS] Execution logged for schedule ${schedule.id}`);
         } catch (error) {
-          console.error(`Error executing schedule ${schedule.id}:`, error);
+          console.error(`[CRON ERROR] Error executing schedule ${schedule.id}:`, error);
           await logExecution(schedule.id, false, error.message);
         }
+      }, {
+        timezone: timezone
       });
 
       // Store the cron job
@@ -227,7 +367,7 @@ async function setupSchedule(schedule) {
       const isScheduled = job.scheduled !== false;
       console.log(`Recurring schedule ${schedule.id} set up successfully (scheduled: ${isScheduled})`);
       console.log(`Cron expression: ${schedule.cron_expression}`);
-      console.log(`Next execution will be at the next cron interval matching: ${schedule.cron_expression}`);
+      console.log(`Next execution will be at the next cron interval matching: ${formatted}`);
     }
   } catch (error) {
     console.error(`Error setting up schedule ${schedule.id}:`, error);
@@ -242,11 +382,18 @@ function removeSchedule(scheduleId) {
       job.instance.stop();
       console.log(`Stopped cron job ${scheduleId}`);
     } else if (job.type === 'timeout') {
-      clearTimeout(job.instance);
-      console.log(`Cleared timeout job ${scheduleId}`);
+      // Clear the timeout if we have a valid timeout ID
+      if (job.instance !== null && typeof job.instance !== 'undefined') {
+        clearTimeout(job.instance);
+        console.log(`Cleared timeout job ${scheduleId}`);
+      } else {
+        console.log(`Timeout job ${scheduleId} has no valid timeout ID, job may have already executed`);
+      }
     }
     activeJobs.delete(scheduleId);
     console.log(`Schedule ${scheduleId} removed`);
+  } else {
+    console.log(`Schedule ${scheduleId} not found in active jobs`);
   }
 }
 
@@ -260,5 +407,6 @@ module.exports = {
   setupAllSchedules,
   setupSchedule,
   removeSchedule,
-  updateSchedule
+  updateSchedule,
+  calculateNextExecutionTime
 };
