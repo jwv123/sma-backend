@@ -131,18 +131,16 @@ function calculateNextExecutionTime(cronExpression, timezone) {
     const [minuteExpr, hourExpr, dayOfMonthExpr, monthExpr, dayOfWeekExpr] = parts;
 
     // Helper to parse a cron field into an array of valid values
-    function parseCronField(field, min, max, isMonth = false, isDow = false) {
+    function parseCronField(field, min, max) {
       const values = [];
-      const parts = field.split(',');
+      const fieldParts = field.split(',');
 
-      for (const part of parts) {
+      for (const part of fieldParts) {
         if (part === '*') {
-          // All values
           for (let i = min; i <= max; i++) {
             values.push(i);
           }
         } else if (part.includes('/')) {
-          // Step values: e.g., */5 or 1-10/2
           const [range, step] = part.split('/');
           const stepVal = parseInt(step);
 
@@ -161,40 +159,39 @@ function calculateNextExecutionTime(cronExpression, timezone) {
             values.push(i);
           }
         } else if (part.includes('-')) {
-          // Range: e.g., 1-5
           const [start, end] = part.split('-').map(Number);
           for (let i = start; i <= end; i++) {
             values.push(i);
           }
         } else {
-          // Single value
           values.push(parseInt(part));
         }
       }
 
-      return values.sort((a, b) => a - b);
+      return [...new Set(values)].sort((a, b) => a - b);
     }
-
-    // Get current time
-    const now = new Date();
-    now.setSeconds(0, 0); // Reset seconds for comparison
 
     // Parse cron fields
     const minutes = parseCronField(minuteExpr, 0, 59);
     const hours = parseCronField(hourExpr, 0, 23);
     const daysOfMonth = parseCronField(dayOfMonthExpr, 1, 31);
-    const months = parseCronField(monthExpr, 1, 12, true);
-    const daysOfWeek = parseCronField(dayOfWeekExpr, 0, 6, false, true);
+    const months = parseCronField(monthExpr, 1, 12);
+    const daysOfWeek = parseCronField(dayOfWeekExpr, 0, 6);
 
-    // If day of week is *, default to all days (0-6)
-    if (dayOfWeekExpr === '*') {
-      for (let i = 0; i <= 6; i++) daysOfWeek.push(i);
-    }
+    // Use Intl.DateTimeFormat to get current time in the target timezone
+    const dtf = new Intl.DateTimeFormat('en-US', {
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+      hourCycle: 'h23', timeZone: timezone
+    });
+
+    const now = new Date();
+    const nowInTz = new Date(dtf.format(now));
 
     // Find next execution time (search next 366 days to handle leap years)
     for (let daysToAdd = 0; daysToAdd < 366; daysToAdd++) {
-      const testDate = new Date(now);
-      testDate.setDate(now.getDate() + daysToAdd);
+      const testDate = new Date(nowInTz);
+      testDate.setDate(nowInTz.getDate() + daysToAdd);
 
       const testDayOfMonth = testDate.getDate();
       const testMonth = testDate.getMonth() + 1;
@@ -211,7 +208,7 @@ function calculateNextExecutionTime(cronExpression, timezone) {
       let matchesDate = false;
       if (dayOfMonthExpr !== '*' && dayOfWeekExpr !== '*') {
         // Both restricted: OR logic
-        matchesDate = matchesDayOfMonth || matchesDayOfWeek;
+        matchesDate = (matchesDayOfMonth || matchesDayOfWeek) && matchesMonth;
       } else {
         // One or both are *: AND logic
         matchesDate = matchesDayOfMonth && matchesDayOfWeek && matchesMonth;
@@ -224,11 +221,19 @@ function calculateNextExecutionTime(cronExpression, timezone) {
             const testTime = new Date(testDate);
             testTime.setHours(hour, minute, 0, 0);
 
-            // Skip past times
-            if (testTime.getTime() > now.getTime()) {
+            // Skip past times (compare in the target timezone)
+            if (testTime.getTime() > nowInTz.getTime()) {
+              // Format the result in the target timezone for display
+              const resultDate = new Date(testTime.getTime() - nowInTz.getTime() + now.getTime());
+              const formattedDt = new Intl.DateTimeFormat('en-US', {
+                year: 'numeric', month: 'long', day: 'numeric',
+                hour: '2-digit', minute: '2-digit',
+                hourCycle: 'h23', timeZone: timezone
+              }).format(resultDate);
+
               return {
-                nextExecution: testTime,
-                formatted: testTime.toLocaleString()
+                nextExecution: resultDate,
+                formatted: formattedDt
               };
             }
           }
@@ -354,7 +359,8 @@ async function setupSchedule(schedule) {
           await logExecution(schedule.id, false, error.message);
         }
       }, {
-        timezone: timezone
+        timezone: timezone,
+        recoverMissedExecutions: true
       });
 
       // Store the cron job

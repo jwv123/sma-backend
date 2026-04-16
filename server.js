@@ -39,6 +39,12 @@ app.get('/health', (req, res) => {
   res.json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
+// Get server timezone
+app.get('/api/timezone', (req, res) => {
+  const timezone = process.env.SCHEDULE_TIMEZONE || 'America/New_York';
+  res.json({ success: true, timezone });
+});
+
 // Get all schedules with next execution time
 app.get('/api/schedules', async (req, res) => {
   try {
@@ -47,6 +53,23 @@ app.get('/api/schedules', async (req, res) => {
 
     // Calculate next execution time for each schedule
     const schedulesWithNext = schedules.map(schedule => {
+      if (schedule.is_one_time) {
+        // For one-time schedules, use the one_time_date
+        const oneTimeDate = schedule.one_time_date ? new Date(schedule.one_time_date) : null;
+        const formatted = oneTimeDate && !isNaN(oneTimeDate.getTime())
+          ? new Intl.DateTimeFormat('en-US', {
+              year: 'numeric', month: 'long', day: 'numeric',
+              hour: '2-digit', minute: '2-digit',
+              hourCycle: 'h23', timeZone: timezone
+            }).format(oneTimeDate)
+          : 'No date set';
+        return {
+          ...schedule,
+          next_execution: formatted,
+          next_execution_time: oneTimeDate && !isNaN(oneTimeDate.getTime()) ? oneTimeDate.toISOString() : null
+        };
+      }
+
       const { nextExecution, formatted } = calculateNextExecutionTime(schedule.cron_expression, timezone);
       return {
         ...schedule,
@@ -55,7 +78,7 @@ app.get('/api/schedules', async (req, res) => {
       };
     });
 
-    res.json({ success: true, schedules: schedulesWithNext });
+    res.json({ success: true, schedules: schedulesWithNext, timezone });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
