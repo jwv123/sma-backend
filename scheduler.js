@@ -29,6 +29,35 @@ async function fetchContentItemById(contentItemId) {
 // Store active jobs (both cron and timeouts)
 const activeJobs = new Map();
 
+// Deduplication: track in-flight executions to prevent duplicate triggers
+const runningExecutions = new Set();
+
+async function executeSchedule(schedule) {
+  // Deduplication guard — skip if this schedule is already executing
+  if (runningExecutions.has(schedule.id)) {
+    console.log(`[DEDUP] Schedule ${schedule.id} is already executing, skipping duplicate trigger`);
+    return;
+  }
+
+  runningExecutions.add(schedule.id);
+  try {
+    let contentData = null;
+    if (schedule.content_items) {
+      contentData = schedule.content_items;
+    } else if (schedule.content_item_id) {
+      contentData = await fetchContentItemById(schedule.content_item_id);
+    }
+
+    const result = await triggerWorkflow(schedule.workflow_id, schedule.id, contentData);
+    await logExecution(schedule.id, result.success, result.response || result.error);
+  } catch (error) {
+    console.error(`Error executing schedule ${schedule.id}:`, error);
+    await logExecution(schedule.id, false, error.message);
+  } finally {
+    runningExecutions.delete(schedule.id);
+  }
+}
+
 // Function to setup all schedules from database
 async function setupAllSchedules() {
   try {
@@ -262,7 +291,7 @@ async function setupSchedule(schedule) {
         console.log(`Setting up one-time schedule ${schedule.id} to run at ${scheduledTime.toISOString()} (timezone: ${timezone})`);
         console.log(`Schedule data:`, JSON.stringify(schedule, null, 2));
 
-        // Store the timeout ID directly to avoid race conditions
+        // Store the timeout ID directly (not as a placeholder) to avoid race conditions
         const timeoutId = setTimeout(async () => {
           // Check if this schedule still exists in activeJobs before executing
           const storedJob = activeJobs.get(schedule.id);
@@ -273,36 +302,12 @@ async function setupSchedule(schedule) {
 
           console.log(`[ONE-TIME EXECUTION] Executing scheduled workflow ${schedule.workflow_id} for schedule ${schedule.id}`);
           console.log(`[ONE-TIME EXECUTION] Current time: ${new Date().toISOString()}`);
-          console.log(`[ONE-TIME EXECUTION] Schedule data:`, JSON.stringify(schedule, null, 2));
 
-          try {
-            // Pass content data if available
-            let contentData = null;
-            if (schedule.content_items) {
-              contentData = schedule.content_items;
-              console.log(`Using content_items from schedule:`, JSON.stringify(contentData, null, 2));
-            } else if (schedule.content_item_id) {
-              console.log(`Schedule has content_item_id ${schedule.content_item_id} but no content_items data`);
-              // Try to fetch content item data manually as fallback
-              contentData = await fetchContentItemById(schedule.content_item_id);
-              console.log(`Fetched content data manually:`, JSON.stringify(contentData, null, 2));
-            } else {
-              console.log(`No content data available for schedule`);
-            }
+          await executeSchedule(schedule);
 
-            const result = await triggerWorkflow(schedule.workflow_id, schedule.id, contentData);
-            await logExecution(schedule.id, result.success, result.response || result.error);
-
-            // Remove the job after execution
-            activeJobs.delete(schedule.id);
-            console.log(`One-time schedule ${schedule.id} executed and removed`);
-          } catch (error) {
-            console.error(`[ONE-TIME ERROR] Error executing one-time schedule ${schedule.id}:`, error);
-            await logExecution(schedule.id, false, error.message);
-
-            // Remove the job after execution even if it failed
-            activeJobs.delete(schedule.id);
-          }
+          // Remove the job after execution
+          activeJobs.delete(schedule.id);
+          console.log(`One-time schedule ${schedule.id} executed and removed`);
         }, timeout);
 
         // Update the job with the actual timeout ID immediately
@@ -334,33 +339,10 @@ async function setupSchedule(schedule) {
         console.log(`[CRON EXECUTION] Executing scheduled workflow ${schedule.workflow_id} for schedule ${schedule.id}`);
         console.log(`[CRON EXECUTION] Current time: ${new Date().toISOString()}`);
         console.log(`[CRON EXECUTION] Timezone: ${timezone}`);
-        console.log(`[CRON EXECUTION] Schedule data:`, JSON.stringify(schedule, null, 2));
 
-        try {
-          // Pass content data if available
-          let contentData = null;
-          if (schedule.content_items) {
-            contentData = schedule.content_items;
-            console.log(`Using content_items from schedule:`, JSON.stringify(contentData, null, 2));
-          } else if (schedule.content_item_id) {
-            console.log(`Schedule has content_item_id ${schedule.content_item_id} but no content_items data`);
-            // Try to fetch content item data manually as fallback
-            contentData = await fetchContentItemById(schedule.content_item_id);
-            console.log(`Fetched content data manually:`, JSON.stringify(contentData, null, 2));
-          } else {
-            console.log(`No content data available for schedule`);
-          }
-
-          const result = await triggerWorkflow(schedule.workflow_id, schedule.id, contentData);
-          await logExecution(schedule.id, result.success, result.response || result.error);
-          console.log(`[CRON SUCCESS] Execution logged for schedule ${schedule.id}`);
-        } catch (error) {
-          console.error(`[CRON ERROR] Error executing schedule ${schedule.id}:`, error);
-          await logExecution(schedule.id, false, error.message);
-        }
+        await executeSchedule(schedule);
       }, {
-        timezone: timezone,
-        recoverMissedExecutions: true
+        timezone: timezone
       });
 
       // Store the cron job
