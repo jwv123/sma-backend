@@ -9,15 +9,30 @@ async function getFetch() {
   return _fetch;
 }
 
+// Validate workflow ID to prevent SSRF
+function validateWorkflowId(workflowId) {
+  if (!workflowId || typeof workflowId !== 'string') {
+    throw new Error('Workflow ID is required');
+  }
+  // Only allow alphanumeric characters, hyphens, and underscores
+  if (!/^[a-zA-Z0-9_-]+$/.test(workflowId)) {
+    throw new Error('Invalid workflow ID: must be alphanumeric with hyphens/underscores only');
+  }
+  if (workflowId.length > 100) {
+    throw new Error('Invalid workflow ID: too long');
+  }
+}
+
 // Function to trigger workflow via webhook
 async function triggerWorkflow(workflowId, scheduleId, contentData = null) {
   const fetch = await getFetch();
   try {
+    // Validate workflow ID to prevent SSRF
+    validateWorkflowId(workflowId);
+
     console.log(`Triggering workflow ${workflowId} for schedule ${scheduleId}`);
     const WEBHOOK_URL = process.env.WEBHOOK_URL || 'https://ef0ps4gk.rcsrv.net/webhook/';
-const webhookUrl = `${WEBHOOK_URL.replace(/\/+$/, '')}/${workflowId}`;
-console.log(`Webhook URL: ${webhookUrl}`);
-    console.log(`Content data received:`, JSON.stringify(contentData, null, 2));
+    const webhookUrl = `${WEBHOOK_URL.replace(/\/+$/, '')}/${workflowId}`;
 
     // Prepare payload with content data if available
     const payload = {
@@ -34,9 +49,6 @@ console.log(`Webhook URL: ${webhookUrl}`);
         description: contentData.description,
         resourceUrls: contentData.resource_urls || []
       };
-      console.log(`Payload with content:`, JSON.stringify(payload, null, 2));
-    } else {
-      console.log(`No content data provided, sending basic payload`);
     }
 
     const response = await fetch(webhookUrl, {
@@ -48,10 +60,8 @@ console.log(`Webhook URL: ${webhookUrl}`);
     });
 
     console.log(`Webhook response status: ${response.status}`);
-    console.log(`Webhook response ok: ${response.ok}`);
 
     const result = await response.text();
-    console.log(`Workflow ${workflowId} triggered. Response:`, result);
 
     if (response.ok) {
       console.log(`Workflow ${workflowId} triggered successfully.`);
@@ -61,7 +71,7 @@ console.log(`Webhook URL: ${webhookUrl}`);
       return { success: false, error: `HTTP ${response.status}: ${response.statusText}`, response: result };
     }
   } catch (error) {
-    console.error(`Failed to trigger workflow ${workflowId}:`, error);
+    console.error(`Failed to trigger workflow ${workflowId}:`, error.message);
     return { success: false, error: error.message };
   }
 }

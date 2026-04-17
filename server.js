@@ -18,9 +18,120 @@ const { triggerWorkflow } = require('./utils');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Middleware
-app.use(cors());
+// --- CORS Configuration ---
+const allowedOrigins = [
+  'https://sma-backend-lujo.onrender.com',
+  'http://localhost:3000',
+  'http://localhost:5500',
+  'http://127.0.0.1:5500'
+];
+
+app.use(cors({
+  origin: function (origin, callback) {
+    // Allow requests with no origin (e.g., server-to-server, curl)
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  }
+}));
+
 app.use(express.json());
+
+// --- Authentication Middleware ---
+async function requireAuth(req, res, next) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ success: false, error: 'Unauthorized: missing or invalid token' });
+  }
+
+  const token = authHeader.split(' ')[1];
+  try {
+    const { data: { user }, error } = await supabase.auth.getUser(token);
+    if (error || !user) {
+      return res.status(401).json({ success: false, error: 'Unauthorized: invalid or expired token' });
+    }
+    req.user = user;
+    next();
+  } catch (err) {
+    return res.status(401).json({ success: false, error: 'Unauthorized: token verification failed' });
+  }
+}
+
+// --- Input Validation Helpers ---
+function validateScheduleInput(data) {
+  const errors = [];
+  if (!data.workflow_id || typeof data.workflow_id !== 'string') {
+    errors.push('workflow_id is required');
+  } else if (!/^[a-zA-Z0-9_-]+$/.test(data.workflow_id) || data.workflow_id.length > 100) {
+    errors.push('workflow_id must be alphanumeric (hyphens/underscores allowed), max 100 chars');
+  }
+  if (!data.cron_expression || typeof data.cron_expression !== 'string') {
+    errors.push('cron_expression is required');
+  } else if (data.cron_expression.length > 100) {
+    errors.push('cron_expression must be max 100 chars');
+  }
+  if (data.name && typeof data.name !== 'string') {
+    errors.push('name must be a string');
+  } else if (data.name && data.name.length > 200) {
+    errors.push('name must be max 200 chars');
+  }
+  if (data.description && data.description.length > 2000) {
+    errors.push('description must be max 2000 chars');
+  }
+  if (data.content_item_id && !Number.isInteger(Number(data.content_item_id))) {
+    errors.push('content_item_id must be an integer');
+  }
+  if (data.is_one_time && typeof data.is_one_time !== 'boolean') {
+    errors.push('is_one_time must be a boolean');
+  }
+  return errors;
+}
+
+function validateContentInput(data) {
+  const errors = [];
+  if (!data.title || typeof data.title !== 'string' || data.title.trim().length === 0) {
+    errors.push('title is required');
+  } else if (data.title.length > 200) {
+    errors.push('title must be max 200 chars');
+  }
+  if (data.description && typeof data.description !== 'string') {
+    errors.push('description must be a string');
+  } else if (data.description && data.description.length > 2000) {
+    errors.push('description must be max 2000 chars');
+  }
+  if (data.resource_urls) {
+    if (!Array.isArray(data.resource_urls)) {
+      errors.push('resource_urls must be an array');
+    } else if (data.resource_urls.length > 10) {
+      errors.push('resource_urls must have max 10 items');
+    } else {
+      for (const url of data.resource_urls) {
+        if (typeof url !== 'string' || url.length > 2000) {
+          errors.push('each resource_url must be a string, max 2000 chars');
+          break;
+        }
+      }
+    }
+  }
+  return errors;
+}
+
+// --- Public Routes (no auth required) ---
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.json({ status: 'OK', timestamp: new Date().toISOString() });
+});
+
+// Get server timezone
+app.get('/api/timezone', (req, res) => {
+  const timezone = process.env.SCHEDULE_TIMEZONE || 'Africa/Johannesburg';
+  res.json({ success: true, timezone });
+});
+
+// --- Authenticated Routes ---
 
 // Initialize schedules on startup
 (async () => {
@@ -32,29 +143,15 @@ app.use(express.json());
   }
 })();
 
-// API Routes
-
-// Health check endpoint
-app.get('/health', (req, res) => {
-  res.json({ status: 'OK', timestamp: new Date().toISOString() });
-});
-
-// Get server timezone
-app.get('/api/timezone', (req, res) => {
-  const timezone = process.env.SCHEDULE_TIMEZONE || 'America/New_York';
-  res.json({ success: true, timezone });
-});
-
-// Get all schedules with next execution time
-app.get('/api/schedules', async (req, res) => {
+// Get all schedules for the authenticated user
+app.get('/api/schedules', requireAuth, async (req, res) => {
   try {
-    const schedules = await getSchedules();
-    const timezone = process.env.SCHEDULE_TIMEZONE || 'America/New_York';
+    const schedules = await getSchedules(req.user.id);
+    const timezone = process.env.SCHEDULE_TIMEZONE || 'Africa/Johannesburg';
 
     // Calculate next execution time for each schedule
     const schedulesWithNext = schedules.map(schedule => {
       if (schedule.is_one_time) {
-        // For one-time schedules, use the one_time_date
         const oneTimeDate = schedule.one_time_date ? new Date(schedule.one_time_date) : null;
         const formatted = oneTimeDate && !isNaN(oneTimeDate.getTime())
           ? new Intl.DateTimeFormat('en-US', {
@@ -85,17 +182,22 @@ app.get('/api/schedules', async (req, res) => {
 });
 
 // Create a new schedule
-app.post('/api/schedules', async (req, res) => {
+app.post('/api/schedules', requireAuth, async (req, res) => {
   try {
     const scheduleData = req.body;
 
     // Validate required fields
-    if (!scheduleData.workflow_id || !scheduleData.cron_expression || !scheduleData.user_id) {
-      return res.status(400).json({
-        success: false,
-        error: 'Missing required fields: workflow_id, cron_expression, user_id'
-      });
+    const validationErrors = validateScheduleInput(scheduleData);
+    if (validationErrors.length > 0) {
+      return res.status(400).json({ success: false, error: validationErrors.join('; ') });
     }
+
+    if (!scheduleData.cron_expression) {
+      return res.status(400).json({ success: false, error: 'Missing required fields: workflow_id, cron_expression' });
+    }
+
+    // Use authenticated user's ID (ignore any user_id in the request body)
+    scheduleData.user_id = req.user.id;
 
     // Create in database
     const newSchedule = await createSchedule(scheduleData);
@@ -110,13 +212,23 @@ app.post('/api/schedules', async (req, res) => {
 });
 
 // Update a schedule
-app.put('/api/schedules/:id', async (req, res) => {
+app.put('/api/schedules/:id', requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const updates = req.body;
 
-    // Update in database
-    const updatedSchedule = await updateScheduleDB(id, updates);
+    // Validate input
+    const validationErrors = validateScheduleInput(updates);
+    if (validationErrors.length > 0) {
+      return res.status(400).json({ success: false, error: validationErrors.join('; ') });
+    }
+
+    // Update in database (with user scope check)
+    const updatedSchedule = await updateScheduleDB(id, req.user.id, updates);
+
+    if (!updatedSchedule) {
+      return res.status(404).json({ success: false, error: 'Schedule not found or not owned by user' });
+    }
 
     // Update in scheduler
     await updateSchedule(updatedSchedule);
@@ -128,15 +240,19 @@ app.put('/api/schedules/:id', async (req, res) => {
 });
 
 // Delete a schedule
-app.delete('/api/schedules/:id', async (req, res) => {
+app.delete('/api/schedules/:id', requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
 
     // Remove from scheduler
     removeSchedule(id);
 
-    // Delete from database
-    await deleteSchedule(id);
+    // Delete from database (with user scope check)
+    const deleted = await deleteSchedule(id, req.user.id);
+
+    if (!deleted) {
+      return res.status(404).json({ success: false, error: 'Schedule not found or not owned by user' });
+    }
 
     res.json({ success: true, message: 'Schedule deleted successfully' });
   } catch (error) {
@@ -145,7 +261,7 @@ app.delete('/api/schedules/:id', async (req, res) => {
 });
 
 // Manual trigger endpoint
-app.post('/api/trigger/:workflowId', async (req, res) => {
+app.post('/api/trigger/:workflowId', requireAuth, async (req, res) => {
   try {
     const { workflowId } = req.params;
     const result = await triggerWorkflow(workflowId, 'manual-trigger');
@@ -156,7 +272,7 @@ app.post('/api/trigger/:workflowId', async (req, res) => {
 });
 
 // Reload all schedules (useful for manual refresh)
-app.post('/api/reload', async (req, res) => {
+app.post('/api/reload', requireAuth, async (req, res) => {
   try {
     await setupAllSchedules();
     res.json({ success: true, message: 'Schedules reloaded successfully' });
@@ -165,22 +281,20 @@ app.post('/api/reload', async (req, res) => {
   }
 });
 
-// Content Management API Routes
-
 // Create a new content item
-app.post('/api/content', async (req, res) => {
+app.post('/api/content', requireAuth, async (req, res) => {
   try {
     const contentData = req.body;
 
-    // Validate required fields
-    if (!contentData.title) {
-      return res.status(400).json({
-        success: false,
-        error: 'Missing required field: title'
-      });
+    // Validate input
+    const validationErrors = validateContentInput(contentData);
+    if (validationErrors.length > 0) {
+      return res.status(400).json({ success: false, error: validationErrors.join('; ') });
     }
 
-    // Create in database (user_id should come from authentication middleware)
+    // Use authenticated user's ID
+    contentData.user_id = req.user.id;
+
     const newContent = await createContentItem(contentData);
     res.json({ success: true, content: newContent });
   } catch (error) {
@@ -188,11 +302,15 @@ app.post('/api/content', async (req, res) => {
   }
 });
 
-// Get all content items for a user
-app.get('/api/content/:userId', async (req, res) => {
+// Get all content items for the authenticated user
+app.get('/api/content/:userId', requireAuth, async (req, res) => {
   try {
-    const { userId } = req.params;
-    const contentItems = await getContentItems(userId);
+    // Only allow users to access their own content
+    if (req.params.userId !== req.user.id) {
+      return res.status(403).json({ success: false, error: 'Forbidden: cannot access another user\'s content' });
+    }
+
+    const contentItems = await getContentItems(req.user.id);
     res.json({ success: true, content: contentItems });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
@@ -200,13 +318,23 @@ app.get('/api/content/:userId', async (req, res) => {
 });
 
 // Update a content item
-app.put('/api/content/:id', async (req, res) => {
+app.put('/api/content/:id', requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const updates = req.body;
 
-    // Update in database
-    const updatedContent = await updateContentItem(id, updates);
+    // Validate input
+    const validationErrors = validateContentInput(updates);
+    if (validationErrors.length > 0) {
+      return res.status(400).json({ success: false, error: validationErrors.join('; ') });
+    }
+
+    const updatedContent = await updateContentItem(id, req.user.id, updates);
+
+    if (!updatedContent) {
+      return res.status(404).json({ success: false, error: 'Content item not found or not owned by user' });
+    }
+
     res.json({ success: true, content: updatedContent });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
@@ -214,12 +342,16 @@ app.put('/api/content/:id', async (req, res) => {
 });
 
 // Delete a content item
-app.delete('/api/content/:id', async (req, res) => {
+app.delete('/api/content/:id', requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Delete from database
-    await deleteContentItem(id);
+    const deleted = await deleteContentItem(id, req.user.id);
+
+    if (!deleted) {
+      return res.status(404).json({ success: false, error: 'Content item not found or not owned by user' });
+    }
+
     res.json({ success: true, message: 'Content item deleted successfully' });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });

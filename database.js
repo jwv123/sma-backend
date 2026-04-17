@@ -8,13 +8,13 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 // Create Supabase client with service role key for backend access
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
-// Get all active schedules from database with associated content
-async function getSchedules() {
+// Get all active schedules for a specific user with associated content
+async function getSchedules(userId) {
   try {
-    console.log('Fetching schedules from database with JOIN query...');
+    console.log(`Fetching schedules for user ${userId} from database...`);
 
     // First, get all active schedules with content item data using JOIN
-    const { data: schedules, error: schedulesError } = await supabase
+    let query = supabase
       .from('workflow_schedules')
       .select(`
         *,
@@ -28,27 +28,22 @@ async function getSchedules() {
       .eq('active', true)
       .order('created_at', { ascending: true });
 
+    // Filter by user if userId is provided
+    if (userId) {
+      query = query.eq('user_id', userId);
+    }
+
+    const { data: schedules, error: schedulesError } = await query;
+
     if (schedulesError) {
       console.error('Error fetching schedules with JOIN:', schedulesError);
       throw schedulesError;
     }
 
-    console.log(`Fetched ${schedules ? schedules.length : 0} schedules`);
-    if (schedules && schedules.length > 0) {
-      console.log('First schedule sample:', JSON.stringify(schedules[0], null, 2));
-
-      // Check if content_items are present in the data
-      schedules.forEach((schedule, index) => {
-        if (schedule.content_item_id && !schedule.content_items) {
-          console.warn(`Schedule ${schedule.id} has content_item_id ${schedule.content_item_id} but no content_items data`);
-        }
-      });
-    }
-
+    console.log(`Fetched ${schedules ? schedules.length : 0} schedules for user ${userId}`);
     return schedules || [];
   } catch (error) {
     console.error('Error fetching schedules:', error);
-    // Return empty array but log the specific error
     return [];
   }
 }
@@ -82,8 +77,8 @@ async function createSchedule(scheduleData) {
   }
 }
 
-// Update a schedule
-async function updateSchedule(id, updates) {
+// Update a schedule (scoped to user)
+async function updateSchedule(id, userId, updates) {
   try {
     // Prepare updates, ensuring we only include valid fields
     const validUpdates = {
@@ -108,9 +103,16 @@ async function updateSchedule(id, updates) {
       .from('workflow_schedules')
       .update(validUpdates)
       .eq('id', id)
+      .eq('user_id', userId)  // Ensure user owns this schedule
       .select();
 
     if (error) throw error;
+
+    // Return null if no rows matched (user doesn't own this schedule)
+    if (!data || data.length === 0) {
+      return null;
+    }
+
     return data[0];
   } catch (error) {
     console.error('Error updating schedule:', error);
@@ -118,15 +120,23 @@ async function updateSchedule(id, updates) {
   }
 }
 
-// Delete a schedule
-async function deleteSchedule(id) {
+// Delete a schedule (scoped to user)
+async function deleteSchedule(id, userId) {
   try {
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from('workflow_schedules')
       .delete()
-      .eq('id', id);
+      .eq('id', id)
+      .eq('user_id', userId)  // Ensure user owns this schedule
+      .select();
 
     if (error) throw error;
+
+    // Return false if no rows were deleted (user doesn't own this schedule)
+    if (!data || data.length === 0) {
+      return false;
+    }
+
     return true;
   } catch (error) {
     console.error('Error deleting schedule:', error);
@@ -192,16 +202,23 @@ async function getContentItems(userId) {
   }
 }
 
-// Update a content item
-async function updateContentItem(id, updates) {
+// Update a content item (scoped to user)
+async function updateContentItem(id, userId, updates) {
   try {
     const { data, error } = await supabase
       .from('content_items')
       .update(updates)
       .eq('id', id)
+      .eq('user_id', userId)  // Ensure user owns this content item
       .select();
 
     if (error) throw error;
+
+    // Return null if no rows matched (user doesn't own this content item)
+    if (!data || data.length === 0) {
+      return null;
+    }
+
     return data[0];
   } catch (error) {
     console.error('Error updating content item:', error);
@@ -209,15 +226,23 @@ async function updateContentItem(id, updates) {
   }
 }
 
-// Delete a content item
-async function deleteContentItem(id) {
+// Delete a content item (scoped to user)
+async function deleteContentItem(id, userId) {
   try {
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from('content_items')
       .delete()
-      .eq('id', id);
+      .eq('id', id)
+      .eq('user_id', userId)  // Ensure user owns this content item
+      .select();
 
     if (error) throw error;
+
+    // Return false if no rows were deleted (user doesn't own this content item)
+    if (!data || data.length === 0) {
+      return false;
+    }
+
     return true;
   } catch (error) {
     console.error('Error deleting content item:', error);
