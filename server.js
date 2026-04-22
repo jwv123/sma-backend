@@ -21,6 +21,7 @@ const PORT = process.env.PORT || 3001;
 // --- CORS Configuration ---
 const allowedOrigins = [
   'https://sma-frontend-1ays.onrender.com',
+  'https://sma-frontend-production.up.railway.app',
   'http://localhost:3000',
   'http://localhost:5500',
   'http://127.0.0.1:5500'

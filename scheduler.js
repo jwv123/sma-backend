@@ -65,9 +65,6 @@ async function setupAllSchedules() {
     const schedules = await getSchedules();
 
     console.log(`Retrieved ${schedules ? schedules.length : 0} schedules from database`);
-    if (schedules && schedules.length > 0) {
-      console.log('First schedule from database:', JSON.stringify(schedules[0], null, 2));
-    }
 
     // Clear existing jobs
     activeJobs.forEach((job, id) => {
@@ -289,7 +286,6 @@ async function setupSchedule(schedule) {
 
       if (timeout > 0) {
         console.log(`Setting up one-time schedule ${schedule.id} to run at ${scheduledTime.toISOString()} (timezone: ${timezone})`);
-        console.log(`Schedule data:`, JSON.stringify(schedule, null, 2));
 
         // Store the timeout ID directly (not as a placeholder) to avoid race conditions
         const timeoutId = setTimeout(async () => {
@@ -320,7 +316,6 @@ async function setupSchedule(schedule) {
         console.log(`One-time schedule ${schedule.id} set up successfully (will run in ${Math.round(timeout / 1000)} seconds)`);
       } else {
         console.log(`One-time schedule ${schedule.id} is in the past or invalid, skipping`);
-        console.log(`Schedule data:`, JSON.stringify(schedule, null, 2));
       }
     } else {
       // Validate cron expression for recurring schedules
