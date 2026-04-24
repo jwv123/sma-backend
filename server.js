@@ -20,7 +20,8 @@ const PORT = process.env.PORT || 3001;
 
 // --- CORS Configuration ---
 const allowedOrigins = [
-  'https://www.clearpathai.co.za/products/shareshift',
+  'https://clearpathai.co.za',
+  'https://www.clearpathai.co.za',
   'https://sma-frontend-1ays.onrender.com',
   'https://sma-frontend-production.up.railway.app',
   'http://localhost:3000',
